@@ -54,14 +54,31 @@ impl PlayerDeck {
   }
 }
 
-/// The current state of a game of war.
+#[derive(Clone, Copy)]
+pub struct Params {
+  /// k cards are flipped face-down in a war
+  k: usize,
+  /// If a card loses a battle by honor_threshold or less, it is removed from the game
+  honor_threshold: u8,
+}
+
+impl Default for Params {
+  fn default() -> Self {
+    Self::new(3, 0)
+  }
+}
+
+impl Params {
+  pub fn new(k: usize, honor_threshold: u8) -> Self {
+    Self { k, honor_threshold }
+  }
+}
+
 pub struct Game {
+  params: Params,
   rng: Rng,
   player1: PlayerDeck,
   player2: PlayerDeck,
-
-  /// k cards are flipped face-down in a war
-  k: u32,
 
   /// A workspace vector, storing all the cards won in a single round
   work: Vec<u8>,
@@ -69,17 +86,18 @@ pub struct Game {
 
 impl Game {
   /// Create (but do not simulate) a new game with the given player decks.
-  pub fn new(rng: Rng, player1: PlayerDeck, player2: PlayerDeck, k: u32) -> Self {
+  pub fn new(params: Params, rng: Rng, player1: PlayerDeck, player2: PlayerDeck) -> Self {
     Self {
+      params,
       rng,
       player1,
       player2,
-      k,
       work: Vec::new(),
     }
   }
 
   fn play_round(&mut self) -> RoundResult {
+    let Params { k, honor_threshold } = self.params;
     self.work.clear();
 
     loop {
@@ -94,7 +112,13 @@ impl Game {
         (Some(card1), Some(card2)) => (card1, card2),
       };
 
-      self.work.extend([card1, card2]);
+      // Honorable war: if the losing card lost by a small enough margin, remove it from the game.
+      // Otherwise, append both cards to the win pile.
+      if card1 != card2 && card1.abs_diff(card2) <= honor_threshold {
+        self.work.extend([card1.max(card2)]);
+      } else {
+        self.work.extend([card1, card2]);
+      }
 
       // If the cards are different, one player wins the round
       // If the cards are equal, each player plays up to `k` face-down cards (leaving at least one card in their deck) and we repeat
@@ -103,12 +127,12 @@ impl Game {
         Ordering::Less => return RoundResult::RoundWin(Player::Player2),
 
         Ordering::Equal => {
-          let n = self.player1.cards().saturating_sub(1).min(self.k as usize);
+          let n = self.player1.cards().saturating_sub(1).min(k);
           self
             .work
             .extend((0..n).map(|_| self.player1.draw(&mut self.rng).unwrap()));
 
-          let n = self.player2.cards().saturating_sub(1).min(self.k as usize);
+          let n = self.player2.cards().saturating_sub(1).min(k);
           self
             .work
             .extend((0..n).map(|_| self.player2.draw(&mut self.rng).unwrap()));

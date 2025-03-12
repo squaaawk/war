@@ -1,7 +1,8 @@
 mod sim;
 
 use fastrand::Rng;
-use sim::{Game, GameResult, PlayerDeck};
+use sim::{Game, GameResult, Params, PlayerDeck};
+use thousands::Separable;
 
 /// Computes the mean of an iterator of f64s.
 fn mean(data: impl Iterator<Item = f64>, n: usize) -> f64 {
@@ -22,7 +23,7 @@ fn standard_deck(n: u8, k: usize) -> Vec<u8> {
 
 /// Simulates a bunch of games using the given function to determine the player's initial decks.
 /// If a path is given, saves a list of the individual game lengths as a json file.
-fn simulate<F>(n_games: usize, path: Option<&str>, f: F)
+fn simulate<F>(path: Option<&str>, params: Params, f: F)
 where
   F: Fn(&mut Rng) -> (PlayerDeck, PlayerDeck),
 {
@@ -30,13 +31,23 @@ where
   let start = std::time::Instant::now();
 
   let mut rng = Rng::new();
-  let (wins, turns): (Vec<_>, Vec<_>) = (0..n_games)
-    .map(|_| {
+  let mut wins = Vec::new();
+  let mut turns = Vec::new();
+
+  // Simulate games until at least a second has elapsed
+  let mut n_games = 900usize;
+  while start.elapsed().as_secs_f64() <= 1.0 {
+    n_games += 10usize.pow(n_games.ilog10());
+
+    while wins.len() < n_games {
       let (player1, player2) = f(&mut rng);
-      let mut game = Game::new(rng.fork(), player1, player2, 3);
-      game.play()
-    })
-    .unzip();
+      let mut game = Game::new(params, rng.fork(), player1, player2);
+      let (win, turn) = game.play();
+
+      wins.push(win);
+      turns.push(turn);
+    }
+  }
 
   let elapsed = start.elapsed();
 
@@ -59,16 +70,16 @@ where
   let turns: Vec<_> = turns.into_iter().map(|x| x as f64).collect();
   let (mean_turns, stddev_turns) = mean_stddev(&turns);
 
-  println!("  {n_games} games in {elapsed:?}");
+  println!("  {} games in {elapsed:?}", n_games.separate_with_commas());
   println!("  mean score: Player 1 wins {:.1}%", 100.0 * mean_score);
   println!("  mean turns: {mean_turns:.2} +/- {stddev_turns:.2}");
 }
 
 /// Simulates a large number of games of a few game setups, and prints out information about them.
-/// Additionally writes out `standard_war.json`, a list of game lengths for standard war games.
+/// Additionally writes out `standard_war.json` and `honorable_war.json`, list of empirical game lengths.
 fn standard_games() {
   println!("Standard war (shuffled):");
-  simulate(1_000_000, Some("standard_war.json"), |rng| {
+  simulate(Some("standard_war.json"), Params::default(), |rng| {
     let mut deck = standard_deck(13, 4);
     rng.shuffle(&mut deck);
 
@@ -79,7 +90,7 @@ fn standard_games() {
 
   println!();
   println!("Standard war (evenly split):");
-  simulate(1_000_000, None, |_| {
+  simulate(None, Params::default(), |_| {
     let player1 = PlayerDeck::new(standard_deck(13, 2));
     let player2 = PlayerDeck::new(standard_deck(13, 2));
     (player1, player2)
@@ -87,7 +98,7 @@ fn standard_games() {
 
   println!();
   println!("2-deck war (evenly split):");
-  simulate(100_000, None, |_| {
+  simulate(None, Params::default(), |_| {
     let player1 = PlayerDeck::new(standard_deck(13, 4));
     let player2 = PlayerDeck::new(standard_deck(13, 4));
     (player1, player2)
@@ -95,7 +106,7 @@ fn standard_games() {
 
   println!();
   println!("12-deck war (evenly split):");
-  simulate(10_000, None, |_| {
+  simulate(None, Params::default(), |_| {
     let player1 = PlayerDeck::new(standard_deck(13, 4 * 6));
     let player2 = PlayerDeck::new(standard_deck(13, 4 * 6));
     (player1, player2)
@@ -103,9 +114,44 @@ fn standard_games() {
 
   println!();
   println!("Aces vs. the world:");
-  simulate(100_000, None, |_| {
+  simulate(None, Params::default(), |_| {
     let player1 = PlayerDeck::new([13].repeat(4).to_vec());
     let player2 = PlayerDeck::new((1..=12).flat_map(|i| [i].repeat(4)).collect());
+    (player1, player2)
+  });
+
+  println!();
+  println!("Honorable war (shuffled):");
+  simulate(Some("honorable_war.json"), Params::new(3, 1), |rng| {
+    let mut deck = standard_deck(13, 4);
+    rng.shuffle(&mut deck);
+
+    let player1 = PlayerDeck::new(deck[..26].to_vec());
+    let player2 = PlayerDeck::new(deck[26..].to_vec());
+    (player1, player2)
+  });
+
+  println!();
+  println!("2-deck Honorable war (evenly split):");
+  simulate(None, Params::new(3, 1), |_| {
+    let player1 = PlayerDeck::new(standard_deck(13, 4));
+    let player2 = PlayerDeck::new(standard_deck(13, 4));
+    (player1, player2)
+  });
+
+  println!();
+  println!("12-deck Honorable war (evenly split):");
+  simulate(None, Params::new(3, 1), |_| {
+    let player1 = PlayerDeck::new(standard_deck(13, 4 * 6));
+    let player2 = PlayerDeck::new(standard_deck(13, 4 * 6));
+    (player1, player2)
+  });
+
+  println!();
+  println!("12-deck Doubly-honorable war (evenly split):");
+  simulate(None, Params::new(3, 2), |_| {
+    let player1 = PlayerDeck::new(standard_deck(13, 4 * 6));
+    let player2 = PlayerDeck::new(standard_deck(13, 4 * 6));
     (player1, player2)
   });
 }
@@ -122,12 +168,12 @@ fn small_games() {
 
   /// Simulates a bunch of games where each player has `n` unique cards and `k` cards are flipped
   /// in a war, returning the av
-  fn simulate(n_games: usize, n: u8, k: u32) -> f64 {
+  fn simulate(n_games: usize, n: u8, k: usize) -> f64 {
     let mut rng = Rng::new();
     let deck = PlayerDeck::new((0..n).collect());
 
     let turns = (0..n_games).map(|_| {
-      let mut game = Game::new(rng.fork(), deck.clone(), deck.clone(), k);
+      let mut game = Game::new(Params::new(k, 0), rng.fork(), deck.clone(), deck.clone());
       let (_, turns) = game.play();
       turns as f64
     });
